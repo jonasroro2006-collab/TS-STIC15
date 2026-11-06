@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Stic Chat</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+  :root { --bleu: #1f6feb; --fond: #e5ddd5; --moi: #dcf8c6; --autre: #ffffff; --gris: #667781; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--fond); }
+  .ecran { display: none; height: 100%; flex-direction: column; }
+  .ecran.actif { display: flex; }
+  #connexion { align-items: center; justify-content: center; background: #f0f2f5; padding: 20px; }
+  .carte { background: #fff; padding: 28px; border-radius: 12px; width: 100%; max-width: 360px; box-shadow: 0 2px 12px rgba(0,0,0,.1); }
+  h1 { margin: 0 0 18px; color: var(--bleu); font-size: 26px; text-align: center; }
+  input, button { font: inherit; padding: 12px; border-radius: 8px; border: 1px solid #ccd; width: 100%; margin-bottom: 10px; }
+  button { background: var(--bleu); color: #fff; border: none; cursor: pointer; }
+  .erreur { color: #c00; font-size: 14px; min-height: 1.2em; }
+  header { background: var(--bleu); color: #fff; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  header .outils { display: flex; gap: 6px; align-items: center; }
+  header input { margin: 0; width: 140px; padding: 6px 8px; }
+  header button { width: auto; margin: 0; padding: 6px 10px; background: #fff; color: var(--bleu); }
+  #messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .bulle { max-width: 80%; padding: 8px 10px; border-radius: 10px; background: var(--autre); align-self: flex-start; box-shadow: 0 1px 1px rgba(0,0,0,.1); word-wrap: break-word; }
+  .bulle.moi { background: var(--moi); align-self: flex-end; }
+  .auteur { font-size: 12px; font-weight: bold; color: var(--bleu); margin-bottom: 2px; }
+  .heure { font-size: 11px; color: var(--gris); text-align: right; margin-top: 2px; }
+  .bulle img, .bulle video { max-width: 100%; border-radius: 8px; display: block; }
+  .bulle audio { width: 240px; max-width: 100%; }
+  #saisie { display: flex; gap: 6px; padding: 8px; background: #f0f2f5; align-items: center; }
+  #saisie input { margin: 0; flex: 1; border-radius: 20px; }
+  #saisie button { margin: 0; width: 46px; height: 46px; padding: 0; border-radius: 50%; font-size: 18px; flex-shrink: 0; }
+  #btnVocal.enregistre { background: #c00; }
+</style>
+</head>
+<body>
+
+<section id="connexion" class="ecran actif">
+  <div class="carte">
+    <h1>Stic Chat</h1>
+    <input id="identifiant" placeholder="Identifiant (ex. eleve01)" autocapitalize="none" autocomplete="username">
+    <input id="code" type="password" placeholder="Code" autocomplete="current-password">
+    <button id="btnConnexion">Se connecter</button>
+    <div class="erreur" id="erreurConnexion"></div>
+  </div>
+</section>
+
+<section id="appli" class="ecran">
+  <header>
+    <strong>Stic Chat</strong>
+    <div class="outils">
+      <input id="monNom" placeholder="Mon nom">
+      <button id="btnNom">OK</button>
+      <button id="btnSortir">Sortir</button>
+    </div>
+  </header>
+  <div id="messages"></div>
+  <div id="saisie">
+    <button id="btnFichier" title="Image ou vidéo">📎</button>
+    <input type="file" id="fichier" accept="image/*,video/*" style="display:none">
+    <input id="texte" placeholder="Message">
+    <button id="btnVocal" title="Appuyez pour démarrer, puis pour envoyer">🎤</button>
+    <button id="btnEnvoyer" title="Envoyer">➤</button>
+  </div>
+</section>
+
+<script>
+const SUPABASE_URL = "https://seznfhzddvxpunwcotfm.supabase.co";
+const SUPABASE_CLE = "sb_publishable_-BtN6g7-84QUxgwPKG7q5w_amYfbTVD";
+const DOMAINE = "stic-chat.com";
+
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_CLE);
+const $ = id => document.getElementById(id);
+
+let moi = null;
+let enregistreur = null;
+let morceaux = [];
+const noms = new Map();
+const urls = new Map();
+const vus = new Set();
+
+// ---------- Connexion ----------
+
+async function connecter() {
+  $("erreurConnexion").textContent = "";
+  const identifiant = $("identifiant").value.trim().toLowerCase();
+  const code = $("code").value;
+  if (!identifiant || !code) {
+    $("erreurConnexion").textContent = "Remplissez les deux champs.";
+    return;
+  }
+  const { data, error } = await db.auth.signInWithPassword({
+    email: `${identifiant}@${DOMAINE}`,
+    password: code,
+  });
+  if (error) {
+    $("erreurConnexion").textContent = "Identifiant ou code incorrect.";
+    return;
+  }
+  demarrer(data.user.id);
+}
+
+async function demarrer(id) {
+  moi = id;
+  $("connexion").classList.remove("actif");
+  $("appli").classList.add("actif");
+  await chargerProfils();
+  $("monNom").value = noms.get(moi) || "";
+  await chargerMessages();
+  ecouter();
+}
+
+async function sortir() {
+  await db.auth.signOut();
+  location.reload();
+}
+
+// ---------- Données ----------
+
+async function chargerProfils() {
+  const { data } = await db.from("profils").select("id, nom_affiche");
+  (data || []).forEach(p => noms.set(p.id, p.nom_affiche));
+}
+
+async function chargerMessages() {
+  const { data, error } = await db
+    .from("messages")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (error) {
+    alert("Impossible de charger les messages.");
+    return;
+  }
+  data.reverse().forEach(afficher);
+  defiler();
+}
+
+function ecouter() {
+  db.channel("classe")
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, async payload => {
+      if (!noms.has(payload.new.expediteur_id)) await chargerProfils();
+      afficher(payload.new);
+      defiler();
+    })
+    .subscribe();
+}
+
+async function urlMedia(chemin) {
+  if (!urls.has(chemin)) {
+    const { data, error } = await db.storage.from("medias").createSignedUrl(chemin, 3600);
+    if (error) return "";
+    urls.set(chemin, data.signedUrl);
+  }
+  return urls.get(chemin);
+}
+
+// ---------- Affichage ----------
+
+function afficher(m) {
+  if (vus.has(m.id)) return;
+  vus.add(m.id);
+
+  const bulle = document.createElement("div");
+  bulle.className = "bulle" + (m.expediteur_id === moi ? " moi" : "");
+
+  const auteur = document.createElement("div");
+  auteur.className = "auteur";
+  auteur.textContent = noms.get(m.expediteur_id) || "Élève";
+  bulle.appendChild(auteur);
+
+  if (m.type === "texte") {
+    const p = document.createElement("div");
+    p.textContent = m.contenu;
+    bulle.appendChild(p);
+  } else {
+    const el = document.createElement(m.type === "image" ? "img" : m.type === "video" ? "video" : "audio");
+    if (m.type !== "image") el.controls = true;
+    bulle.appendChild(el);
+    urlMedia(m.contenu).then(url => { el.src = url; });
+  }
+
+  const heure = document.createElement("div");
+  heure.className = "heure";
+  heure.textContent = new Date(m.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  bulle.appendChild(heure);
+
+  $("messages").appendChild(bulle);
+}
+
+function defiler() {
+  const zone = $("messages");
+  zone.scrollTop = zone.scrollHeight;
+}
+
+// ---------- Envoi ----------
+
+async function envoyer(type, contenu) {
+  const { data, error } = await db
+    .from("messages")
+    .insert({ expediteur_id: moi, type, contenu })
+    .select()
+    .single();
+  if (error) {
+    alert("Envoi impossible : " + error.message);
+    return;
+  }
+  afficher(data);
+  defiler();
+}
+
+async function envoyerTexte() {
+  const texte = $("texte").value.trim();
+  if (!texte) return;
+  $("texte").value = "";
+  await envoyer("texte", texte);
+}
+
+async function televerser(fichier, nom) {
+  const propre = nom.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const chemin = `${moi}/${Date.now()}-${propre}`;
+  const { error } = await db.storage.from("medias").upload(chemin, fichier, { contentType: fichier.type });
+  if (error) {
+    alert("Envoi du fichier impossible : " + error.message);
+    return null;
+  }
+  return chemin;
+}
+
+async function envoyerFichier(fichier) {
+  let type = null;
+  if (fichier.type.startsWith("image/")) type = "image";
+  if (fichier.type.startsWith("video/")) type = "video";
+  if (!type) {
+    alert("Choisissez une image ou une vidéo.");
+    return;
+  }
+  const chemin = await televerser(fichier, fichier.name);
+  if (chemin) await envoyer(type, chemin);
+}
+
+async function basculerVocal() {
+  if (enregistreur) {
+    enregistreur.stop();
+    return;
+  }
+  let flux;
+  try {
+    flux = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    alert("Micro indisponible. Autorisez le micro dans le navigateur.");
+    return;
+  }
+  morceaux = [];
+  const rec = new MediaRecorder(flux);
+  enregistreur = rec;
+  rec.ondataavailable = e => morceaux.push(e.data);
+  rec.onstop = async () => {
+    flux.getTracks().forEach(t => t.stop());
+    const type = (rec.mimeType || "audio/webm").split(";")[0];
+    const ext = type.includes("mp4") ? "m4a" : "webm";
+    const blob = new Blob(morceaux, { type });
+    enregistreur = null;
+    $("btnVocal").classList.remove("enregistre");
+    const chemin = await televerser(blob, `vocal.${ext}`);
+    if (chemin) await envoyer("audio", chemin);
+  };
+  rec.start();
+  $("btnVocal").classList.add("enregistre");
+}
+
+// ---------- Nom affiché ----------
+
+async function changerNom() {
+  const nom = $("monNom").value.trim();
+  if (!nom) return;
+  const { error } = await db.from("profils").update({ nom_affiche: nom }).eq("id", moi);
+  if (error) {
+    alert("Nom non enregistré : " + error.message);
+    return;
+  }
+  noms.set(moi, nom);
+  alert("Nom enregistré.");
+}
+
+// ---------- Événements ----------
+
+$("btnConnexion").onclick = connecter;
+$("code").addEventListener("keydown", e => { if (e.key === "Enter") connecter(); });
+$("btnNom").onclick = changerNom;
+$("btnSortir").onclick = sortir;
+$("btnFichier").onclick = () => $("fichier").click();
+$("fichier").onchange = e => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (f) envoyerFichier(f);
+};
+$("btnVocal").onclick = basculerVocal;
+$("btnEnvoyer").onclick = envoyerTexte;
+$("texte").addEventListener("keydown", e => { if (e.key === "Enter") envoyerTexte(); });
+
+db.auth.getSession().then(({ data }) => {
+  if (data.session) demarrer(data.session.user.id);
+});
+</script>
+</body>
+</html>
